@@ -1,33 +1,61 @@
-
 using Cysharp.Threading.Tasks;
 using UnityEngine;
+using UnityEngine.UI;
 using Claudia;
 using VOICEVOX;
 using System.Threading;
-using UnityEngine.UI; // UI用の名前空間
+using TMPro;
 
 [RequireComponent(typeof(AudioSource))]
 public class ClaudeToVoiceVox : MonoBehaviour
 {
-    private CancellationToken destroyCancellationToken; // キャンセルトークンの宣言
+    private CancellationTokenSource cancellationTokenSource; // キャンセルトークンの宣言
     public AudioSource audioSource; // AudioSourceをインスペクタで指定
     public InputField inputField; // InputFieldをインスペクタで指定
     public Button submitButton; // Submitボタンをインスペクタで指定
 
+    // 会話ログ関連
+    public Transform contentTransform; // ScrollViewのContentをインスペクタで指定
+    public GameObject messagePrefab;   // メッセージ表示用のプレハブをインスペクタで指定
+    public GameObject avatar; // メニューで選択されたアバターのインスタンス
+    public Transform avatarSpawnPoint; // アバターの生成位置をインスペクタで指定
+
     private void Start()
     {
-        // ボタンにクリックリスナーを追加
+        // キャンセルトークンの初期化
+        cancellationTokenSource = new CancellationTokenSource();
+
+        // Nullチェック
+        ValidateInspectorFields();
+
         submitButton.onClick.AddListener(OnSubmit);
+    }
+
+    private void OnDestroy()
+    {
+        // キャンセルトークンの解放
+        cancellationTokenSource?.Cancel();
+        cancellationTokenSource?.Dispose();
+    }
+
+    private void ValidateInspectorFields()
+    {
+        if (audioSource == null) Debug.LogError("AudioSourceが設定されていません！");
+        if (inputField == null) Debug.LogError("InputFieldが設定されていません！");
+        if (submitButton == null) Debug.LogError("SubmitButtonが設定されていません！");
+        if (contentTransform == null) Debug.LogError("Content Transformが設定されていません！");
+        if (messagePrefab == null) Debug.LogError("Message Prefabが設定されていません！");
+        if (avatarSpawnPoint == null) Debug.LogError("Avatar Spawn Pointが設定されていません！");
     }
 
     private void OnSubmit()
     {
-        // InputFieldからテキストを取得し、Claudeに送信
         string userInput = inputField.text;
         if (!string.IsNullOrEmpty(userInput))
         {
-            SendToClaude(userInput).Forget(); // 非同期処理を呼び出し
-            inputField.text = ""; // 送信後にInputFieldをクリア
+            AddMessageToLog(userInput, true); // ユーザーのメッセージをログに追加
+            SendToClaude(userInput).Forget();
+            inputField.text = "";
         }
         else
         {
@@ -37,46 +65,33 @@ public class ClaudeToVoiceVox : MonoBehaviour
 
     private async UniTaskVoid SendToClaude(string message)
     {
-        // Claude APIクライアントの作成
         var anthropic = new Anthropic();
 
-        // メッセージの配列作成
         var messages = new Message[]
         {
             new() { Role = Roles.User, Content = message }
         };
 
-        // Claude APIでリクエストを送信し、レスポンスを受信する
         var response = await anthropic.Messages.CreateAsync(new()
         {
             Model = Models.Claude3Haiku,
             MaxTokens = 1024,
             Messages = messages,
         },
-        cancellationToken: destroyCancellationToken);
+        cancellationToken: cancellationTokenSource.Token);
 
-        // Claudeの応答内容を取得
         string content = response.Content.ToString();
-
-        // 応答内容の表示
         Debug.Log(content);
 
-        // VOICEVOXクライアントの作成
+        AddMessageToLog(content, false); // Claudeの応答をログに追加
+
         var voicevox = new Voicevox();
+        var speaker = Speaker.九州そら_セクシー;
+        var options = new SynthesisOptions() { SpeedScale = 1.5f };
 
-        // キャラクターの指定
-        var speaker = Speaker.四国めたん_ノーマル;
-
-        // 音声合成オプション
-        var options = new SynthesisOptions() { SpeedScale = 1.0f };
-
-        // 応答が空でない場合は音声合成を行う
         if (!string.IsNullOrEmpty(content))
         {
-            // テキストから音声を生成してAudioClipに変換
-            var audioClip = await voicevox.SynthesisAsync(content, speaker, options, destroyCancellationToken);
-
-            // AudioClipをセットして再生
+            var audioClip = await voicevox.SynthesisAsync(content, speaker, options, cancellationTokenSource.Token);
             audioSource.clip = audioClip;
             audioSource.Play();
         }
@@ -84,5 +99,73 @@ public class ClaudeToVoiceVox : MonoBehaviour
         {
             Debug.LogError("Claudeの応答が空です。");
         }
+    }
+
+    private void AddMessageToLog(string message, bool isUser)
+    {
+        if (messagePrefab == null || contentTransform == null)
+        {
+            Debug.LogError("必要なコンポーネントが設定されていません！");
+            return;
+        }
+
+        // プレハブを生成してContentに配置
+        var messageObject = Instantiate(messagePrefab, contentTransform);
+
+        // メッセージテキストの設定
+        var textComponent = messageObject.GetComponent<TextMeshProUGUI>();
+        if (textComponent == null)
+        {
+            Debug.LogError("Message PrefabにTextMeshProUGUIコンポーネントがありません！");
+            return;
+        }
+
+        textComponent.text = message;
+        textComponent.color = isUser ? Color.blue : Color.green;
+
+        // ScrollViewを最新メッセージにスクロール
+        Canvas.ForceUpdateCanvases();
+        var scrollRect = contentTransform.GetComponentInParent<ScrollRect>();
+        if (scrollRect != null)
+        {
+            scrollRect.verticalNormalizedPosition = 0f;
+        }
+        else
+        {
+            Debug.LogWarning("ScrollRectが見つかりませんでした！");
+        }
+    }
+
+    private void SetupAvatarLipSync()
+    {
+        if (avatar != null)
+        {
+            var lipSyncController = avatar.GetComponent<LipSyncController>();
+            if (lipSyncController != null)
+            {
+                // AudioSourceをアバターに渡す
+                lipSyncController.targetAudioSource = audioSource;
+            }
+            else
+            {
+                Debug.LogWarning("アバターにLipSyncControllerがアタッチされていません！");
+            }
+        }
+        else
+        {
+            Debug.LogError("アバターが設定されていません！");
+        }
+    }
+
+    public void OnAvatarSelected(GameObject selectedAvatarPrefab)
+    {
+        // 選択したアバターをインスタンス化
+        GameObject instantiatedAvatar = Instantiate(selectedAvatarPrefab, avatarSpawnPoint.position, Quaternion.identity);
+
+        // ClaudeToVoiceVoxにアバターを設定
+        avatar = instantiatedAvatar;
+
+        // リップシンク設定を適用
+        SetupAvatarLipSync();
     }
 }
